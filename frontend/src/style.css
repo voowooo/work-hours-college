@@ -1,0 +1,45 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg-primary: #EFF1ED;
+  --color-bg-surface: #FFFFFF;
+  --color-bg-surface-secondary: #F5F5F5;
+  --color-bg-accent: #717744;
+  --color-bg-accent-hover: #5a5f36;
+  --color-bg-success: #22C55E;
+  --color-bg-danger: #ff8282;
+  
+  --color-text-primary: #0a0a0a;
+  --color-text-secondary: #6B7280;
+  --color-text-accent: #717744;
+  --color-text-on-accent: #FFFFFF;
+  --color-text-muted: #9CA3AF;
+  
+  --color-border: #E5E7EB;
+  --color-border-accent: #717744;
+  
+  --color-hours-low: #EF4444;
+  --color-hours-medium: #EAB308;
+  --color-hours-good: #22C55E;
+  --color-hours-high: #3B82F6;
+
+  --font-montserrat: "Montserrat", sans-serif;
+}
+
+@font-face {
+  font-family: "Montserrat";
+  src: url("./assets/fonts/Montserrat-VariableFont_wght.ttf") format("ttf");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+body {
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-family: var(--font-montserrat);
+  display: flex;
+  flex-flow: column;
+  width: 100%;
+  min-height: 100vh;
+}

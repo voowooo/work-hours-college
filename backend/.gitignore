@@ -1,0 +1,21 @@
+# Environment
+.env
+.env.local
+.env.production
+
+# Go
+/bin
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/vendor
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
