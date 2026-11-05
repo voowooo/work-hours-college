@@ -237,11 +237,6 @@ function onLightboxTouchEnd(e: TouchEvent) {
             <p class="text-sm mt-1">Откройте альтушки через рандом</p>
           </motion.div>
         </template>
-
-        <motion.div class="flex flex-col items-center justify-center text-text-muted" :initial="{ opacity: 0 }"
-          :animate="{ opacity: 1 }">
-          <p class="text-sm">авторский сборник, от сердца отрываю</p>
-        </motion.div>
       </motion.div>
     </div>
 

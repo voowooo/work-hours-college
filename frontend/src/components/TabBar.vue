@@ -8,7 +8,7 @@ const tabs = [
   { path: '/', label: 'Календарь', icon: 'calendar' },
   { path: '/stats', label: 'Статистика', icon: 'chart' },
   { path: '/settings', label: 'Настройки', icon: 'settings' },
-  { path: '/alt', label: 'Alt', icon: 'image' }
+  // { path: '/alt', label: 'Alt', icon: 'image' }
 ]
 
 function isActive(path: string): boolean {
