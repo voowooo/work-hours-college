@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { motion, AnimatePresence } from 'motion-v'
 import { useScheduleStore, type Lesson } from '../stores/schedule'
+import { lessonBell } from '../features/bells'
 import { formatDateLocal, getMonday, addDays, formatDateFull } from '../features/date'
 import { useSwipe } from '../features/swipe'
 import WeekSelector from '../components/WeekSelector.vue'
@@ -51,12 +52,28 @@ function loadWeek() {
   void store.fetchRange(dates)
 }
 
-function toggleLesson(lesson: Lesson) {
-  store.setConducted(selectedDate.value, lesson, !store.isConducted(selectedDate.value, lesson.period))
+function bellLabel(period: number): string {
+  const bell = lessonBell(selectedDate.value, period)
+  return bell ? `${bell.start}–${bell.end}` : ''
 }
 
-function markAll(conducted: boolean) {
-  store.setDayConducted(selectedDate.value, conducted)
+function isDone(lesson: Lesson): boolean {
+  return store.isConducted(selectedDate.value, lesson.period)
+}
+
+function phaseLabel(lesson: Lesson): string {
+  if (isDone(lesson)) return 'проведён'
+  const phase = store.phase(selectedDate.value, lesson.period)
+  if (phase === 'ongoing') return 'идёт'
+  if (phase === 'upcoming') return 'ожидается'
+  if (phase === 'done') return 'не проведён'
+  return ''
+}
+
+// Ручная отметка: урок можно пометить проведённым (или снять отметку),
+// например при переносе или отмене занятия.
+function toggleLesson(lesson: Lesson) {
+  void store.setConducted(selectedDate.value, lesson, !isDone(lesson)).catch(() => undefined)
 }
 
 onMounted(loadWeek)
@@ -146,20 +163,6 @@ const { handleTouchStart, handleTouchEnd } = useSwipe({
               {{ conductedCount }} из {{ lessons.length }} проведено
             </p>
           </div>
-          <div v-if="lessons.length" class="flex gap-1">
-            <button
-              class="text-xs px-2.5 py-1.5 rounded-lg bg-bg-accent/10 text-text-accent"
-              @click="markAll(true)"
-            >
-              Все
-            </button>
-            <button
-              class="text-xs px-2.5 py-1.5 rounded-lg bg-bg-surface-secondary text-text-secondary"
-              @click="markAll(false)"
-            >
-              Сброс
-            </button>
-          </div>
         </div>
 
         <div v-if="selectedDay?.status === 'loading'" class="space-y-2">
@@ -185,21 +188,27 @@ const { handleTouchStart, handleTouchEnd } = useSwipe({
         </div>
 
         <div v-else class="space-y-2">
+          <p class="text-[11px] text-text-muted px-1 -mb-1">
+            Нажмите на урок, чтобы отметить его вручную
+          </p>
           <AnimatePresence>
-            <motion.button
+            <motion.div
               v-for="(lesson, index) in lessons"
               :key="`${selectedDate}-${lesson.period}`"
-              class="w-full flex items-center gap-3 p-3 rounded-lg text-left transition-colors"
-              :class="store.isConducted(selectedDate, lesson.period) ? 'bg-bg-accent/10' : 'bg-bg-surface-secondary'"
+              role="button"
+              tabindex="0"
+              class="w-full flex items-center gap-3 p-3 rounded-lg text-left cursor-pointer select-none active:scale-[0.99] transition-transform"
+              :class="isDone(lesson) ? 'bg-bg-accent/10' : store.phase(selectedDate, lesson.period) === 'ongoing' ? 'bg-hours-medium/15' : 'bg-bg-surface-secondary'"
               :initial="{ opacity: 0, y: 12 }"
               :animate="{ opacity: 1, y: 0 }"
               :transition="{ delay: index * 0.04, type: 'spring', stiffness: 320, damping: 24 }"
-              :while-tap="{ scale: 0.98 }"
               @click="toggleLesson(lesson)"
+              @keydown.enter.prevent="toggleLesson(lesson)"
+              @keydown.space.prevent="toggleLesson(lesson)"
             >
               <div
                 class="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-sm font-bold"
-                :class="store.isConducted(selectedDate, lesson.period) ? 'bg-bg-accent text-text-on-accent' : 'bg-bg-surface text-text-secondary'"
+                :class="isDone(lesson) ? 'bg-bg-accent text-text-on-accent' : 'bg-bg-surface text-text-secondary'"
               >
                 {{ lesson.period }}
               </div>
@@ -209,16 +218,18 @@ const { handleTouchStart, handleTouchEnd } = useSwipe({
                   <span class="font-medium text-text-secondary">· {{ lesson.group || 'без группы' }}</span>
                 </p>
                 <p class="text-xs text-text-secondary mt-0.5">
-                  {{ lesson.room ? `ауд. ${lesson.room}` : 'аудитория не указана' }}
+                  {{ bellLabel(lesson.period) }}
+                  <template v-if="bellLabel(lesson.period) && lesson.room"> · </template>
+                  {{ lesson.room ? `ауд. ${lesson.room}` : '' }}
                 </p>
               </div>
               <span
                 class="text-[11px] font-medium shrink-0"
-                :class="store.isConducted(selectedDate, lesson.period) ? 'text-text-accent' : 'text-text-muted'"
+                :class="isDone(lesson) ? 'text-text-accent' : store.phase(selectedDate, lesson.period) === 'ongoing' ? 'text-hours-medium' : 'text-text-muted'"
               >
-                {{ store.isConducted(selectedDate, lesson.period) ? 'проведён' : 'не проведён' }}
+                {{ phaseLabel(lesson) }}
               </span>
-            </motion.button>
+            </motion.div>
           </AnimatePresence>
         </div>
       </motion.div>

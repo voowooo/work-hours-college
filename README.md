@@ -1,226 +1,103 @@
 # Work Hours Counter
 
-Приложение для учета рабочих часов в Telegram Mini App.
+Telegram Mini App для учета часов преподавателя (ДурневДН) по расписанию колледжа.
+
+Вместо ручного ввода прихода/ухода приложение само читает расписание с сайта
+[seimtc.by](https://seimtc.by), показывает уроки на выбранный день, отмечает
+проведенные занятия и считает статистику «проведено / осталось».
 
 ## Структура проекта
 
 ```
-workHoursCounter/
-├── frontend/          # Vue 3 + Vite + Tailwind CSS
-│   ├── src/
-│   │   ├── components/
-│   │   │   └── TimeInput.vue
-│   │   ├── composables/
-│   │   │   └── useTelegram.ts
-│   │   ├── stores/
-│   │   │   └── workHours.ts
-│   │   └── views/
-│   │       ├── CalendarView.vue
-│   │       └── StatsView.vue
-│   └── ...
-└── backend/           # Go + PostgreSQL
-    ├── cmd/server/
-    │   └── main.go
-    └── ...
+work-hours-college/
+├── frontend/               # Vue 3 + Vite + Tailwind CSS + Pinia
+│   └── src/
+│       ├── components/     # WeekSelector, StatCard, TabBar
+│       ├── features/       # звонки (bells), даты, свайпы
+│       ├── stores/
+│       │   └── schedule.ts # расписание, план и отметки
+│       └── views/          # CalendarView, StatsView, SettingsView
+├── backend/                # Go + net/http
+│   ├── cmd/server/         # точка входа
+│   └── internal/schedule/  # загрузка PDF, разбор, работа с БД
+└── supabase-schema.sql     # структура БД (Supabase/PostgreSQL)
 ```
 
-## Установка
+## Как это работает
 
-### Supabase (PostgreSQL)
+1. **Расписание.** По адресу
+   `https://seimtc.by/images/raspisanie/{year}/{date}_{month}p.pdf`
+   (например `.../2026/05_11p.pdf`) лежит PDF на день. Если файла нет, сайт
+   редиректит на `.../ru/images/raspisanie/...`, где отображается `Error` —
+   тогда день считается пустым. Из PDF берутся строки преподавателя
+   `ДурневДН` и превращаются в пары: номер, группа, предмет, аудитория.
+2. **Звонки.** У каждой пары есть время по таблице звонков (будни/суббота,
+   Минск, UTC+3). Как только пара закончилась, она автоматически помечается
+   как проведённая.
+3. **Ручная отметка.** По клику на пару в календаре отметку можно поставить
+   или снять вручную (перенос, отмена занятия). Ручная отметка имеет
+   приоритет над авто-расчётом.
+4. **Хранение.** Все уроки и счетчики пишутся в Supabase, поэтому даже если
+   старые файлы расписания удалят на сайте, проведенные часы сохранятся.
 
-1. Создайте проект в [Supabase](https://supabase.com)
-2. Выполните SQL из `supabase-schema.sql`
-3. Скопируйте connection string
+## Supabase
 
-### Backend
+1. Создайте проект в [Supabase](https://supabase.com).
+2. Выполните SQL из `supabase-schema.sql`.
+3. Скопируйте connection string в `backend/.env` (`DATABASE_URL`).
+
+Основные таблицы:
+
+- `users` — пользователи по `telegram_id`;
+- `schedule_lessons` — уроки дня (`date`, `period`, `group_name`, `subject`,
+  `room`, `conducted`, `manual`); строка сохраняется при успешной загрузке PDF
+  и не удаляется, даже если файл расписания потом пропадет;
+- `subject_plans` — план часов по паре «группа + предмет»; пары создаются
+  автоматически из расписания, часы задаются в настройках.
+
+## Backend
 
 ```bash
 cd backend
-
-# Установите зависимости
 go mod tidy
-
-# Настройте переменные окружения
-export DB_HOST=your-supabase-host
-export DB_PORT=5432
-export DB_USER=postgres
-export DB_PASSWORD=your-password
-export DB_NAME=workhours
-
-# Запустите сервер
+export DATABASE_URL=postgresql://user:password@host:5432/dbname
 go run cmd/server/main.go
 ```
 
-### Frontend
+### REST API
+
+| Метод | Путь             | Назначение                                        |
+|-------|------------------|---------------------------------------------------|
+| GET   | `/schedule?date=YYYY-MM-DD` | Уроки ДурневДН на дату (PDF + сохраненное) |
+| GET   | `/plans`         | План и число проведенных уроков по каждой паре    |
+| PUT   | `/plans`         | Задать план часов для пары                        |
+| PUT   | `/lessons/mark`  | Ручная отметка урока проведенным/непроведенным     |
+| POST  | `/lessons/import`| Разовый перенос старых локальных отметок на сервер |
+
+Запросы, связанные с пользователем, требуют заголовки
+`X-Telegram-User-ID` и `X-Telegram-Username`.
+
+Также есть GraphQL `POST /query` (пока только `me`).
+
+## Frontend
 
 ```bash
 cd frontend
-
-# Установите зависимости
 npm install
-
-# Создайте .env файл
 cp .env.example .env
-
-# Запустите в режиме разработки
 npm run dev
 ```
 
-## Supabase Schema
+## Экраны
 
-```sql
--- Таблица пользователей
-CREATE TABLE users (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  telegram_id BIGINT UNIQUE NOT NULL,
-  username TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
+- **Календарь** — неделя с счетчиками «проведено/всего», уроки выбранного дня
+  со звонками и аудиториями, клик по паре — ручная отметка.
+- **Статистика** — по каждой группе график «проведено / осталось», итоги.
+- **Настройки** — сколько часов всего нужно провести по каждой паре
+  (предметы подтягиваются из расписания автоматически).
 
--- Функция для расчета часов (IMMUTABLE)
--- Поддерживает ночные смены: если left_time < arrived, считаем что ушел на следующий день
-CREATE OR REPLACE FUNCTION calculate_hours_worked(arrived TIME, left_time TIME)
-RETURNS DECIMAL(5,2)
-LANGUAGE plpgsql
-IMMUTABLE
-AS $$
-DECLARE
-  diff INTERVAL;
-  hours DECIMAL(5,2);
-BEGIN
-  IF arrived IS NULL OR left_time IS NULL THEN
-    RETURN 0;
-  END IF;
-  
-  diff := left_time - arrived;
-  
-  -- Если разница отрицательная, значит ушел на следующий день
-  IF diff < INTERVAL '0' THEN
-    diff := diff + INTERVAL '24 hours';
-  END IF;
-  
-  hours := EXTRACT(EPOCH FROM diff) / 3600;
-  RETURN ROUND(hours, 2);
-END;
-$$;
+## Тесты
 
--- Таблица рабочих записей
-CREATE TABLE work_entries (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-  date DATE NOT NULL,
-  arrived_at TIME,
-  left_at TIME,
-  hours_worked DECIMAL(5,2) GENERATED ALWAYS AS (
-    calculate_hours_worked(arrived_at, left_at)
-  ) STORED,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW(),
-  UNIQUE(user_id, date)
-);
-
--- Индексы
-CREATE INDEX idx_work_entries_user_date ON work_entries(user_id, date);
-
--- RLS политики
-ALTER TABLE users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE work_entries ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Users can view own data" ON users
-  FOR SELECT USING (auth.uid()::text = id::text);
-
-CREATE POLICY "Users can view own entries" ON work_entries
-  FOR ALL USING (user_id = auth.uid());
+```bash
+cd backend && go test ./...
 ```
-
-## API (GraphQL)
-
-Endpoint: `POST /query`
-
-### Queries
-
-```graphql
-# Получить текущего пользователя
-query {
-  me {
-    id
-    telegramId
-    username
-  }
-}
-
-# Получить запись по дате
-query {
-  workEntry(date: "2024-01-15") {
-    id
-    date
-    arrivedAt
-    leftAt
-    hoursWorked
-  }
-}
-
-# Получить записи за период
-query {
-  workEntries(startDate: "2024-01-01", endDate: "2024-01-31") {
-    id
-    date
-    arrivedAt
-    leftAt
-    hoursWorked
-  }
-}
-
-# Статистика за месяц
-query {
-  monthStats(year: 2024, month: 1) {
-    month
-    totalHours
-    entries {
-      id
-      date
-      arrivedAt
-      leftAt
-      hoursWorked
-    }
-  }
-}
-```
-
-### Mutations
-
-```graphql
-# Создать/обновить запись
-mutation {
-  upsertWorkEntry(input: {
-    date: "2024-01-15"
-    arrivedAt: "09:00"
-    leftAt: "18:00"
-  }) {
-    id
-    date
-    arrivedAt
-    leftAt
-    hoursWorked
-  }
-}
-
-# Удалить запись
-mutation {
-  deleteWorkEntry(date: "2024-01-15")
-}
-```
-
-## Функциональность
-
-### Календарь (главный экран)
-- Отображение календаря на текущий месяц
-- Свайп влево/вправо для переключения месяцев
-- Выбор даты для установки времени прихода/ухода
-- Автоматический расчет отработанных часов
-
-### Статистика
-- Календарь по неделям
-- Часы под каждым днем
-- Итого за неделю и месяц
-- Средние часы в день

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { motion } from 'motion-v'
 import { useScheduleStore, type CatalogItem } from '../stores/schedule'
 
 const store = useScheduleStore()
+const saveError = ref('')
 
 const groups = computed(() => {
   const map = new Map<string, CatalogItem[]>()
@@ -19,10 +20,15 @@ const groups = computed(() => {
   return [...map.entries()]
 })
 
-function updateHours(item: CatalogItem, event: Event) {
+async function updateHours(item: CatalogItem, event: Event) {
   const raw = (event.target as HTMLInputElement).value
   const parsed = raw.trim() === '' ? 0 : Number(raw)
-  store.setPlannedHours(item.group, item.subject, parsed)
+  try {
+    await store.setPlannedHours(item.group, item.subject, parsed)
+    saveError.value = ''
+  } catch {
+    saveError.value = 'Не удалось сохранить план, попробуйте ещё раз'
+  }
 }
 </script>
 
@@ -39,6 +45,8 @@ function updateHours(item: CatalogItem, event: Event) {
       <p class="text-sm text-text-secondary mb-4">
         Сколько часов всего нужно провести по каждому предмету и группе. Новые пары подтягиваются из расписания.
       </p>
+
+      <p v-if="saveError" class="text-sm text-hours-low mb-3">{{ saveError }}</p>
 
       <div v-if="groups.length === 0" class="bg-bg-surface rounded-xl p-6 text-center text-text-secondary">
         <p>Пока пусто. Откройте день в календаре — предметы появятся сами.</p>

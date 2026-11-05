@@ -32,12 +32,17 @@ func main() {
 	})
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/schedule", schedule.Handler)
+	svc := &schedule.Service{}
+	mux.HandleFunc("/schedule", svc.Schedule)
+	mux.HandleFunc("/plans", svc.Plans)
+	mux.HandleFunc("/lessons/import", svc.Import)
+	mux.HandleFunc("/lessons/mark", svc.Mark)
 
 	database, err := db.New()
 	if err != nil {
 		log.Printf("Database unavailable, schedule endpoint only: %v", err)
 	} else {
+		svc.DB = database
 		defer database.Close()
 
 		resolver := &graph.Resolver{DB: database}

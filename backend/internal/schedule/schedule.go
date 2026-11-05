@@ -3,7 +3,6 @@ package schedule
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,10 +19,11 @@ const TeacherName = "ДурневДН"
 const collegeHost = "https://seimtc.by"
 
 type Lesson struct {
-	Period  int    `json:"period"`
-	Group   string `json:"group"`
-	Subject string `json:"subject"`
-	Room    string `json:"room"`
+	Period    int    `json:"period"`
+	Group     string `json:"group"`
+	Subject   string `json:"subject"`
+	Room      string `json:"room"`
+	Conducted bool   `json:"conducted"`
 }
 
 type DaySchedule struct {
@@ -42,30 +42,6 @@ var (
 	cache    = map[string]cacheEntry{}
 	cacheTTL = 30 * time.Minute
 )
-
-func Handler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	date := r.URL.Query().Get("date")
-	if _, err := time.Parse("2006-01-02", date); err != nil {
-		http.Error(w, "date must be YYYY-MM-DD", http.StatusBadRequest)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
-	defer cancel()
-
-	day, err := Fetch(ctx, date)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(day)
-}
 
 func Fetch(ctx context.Context, date string) (DaySchedule, error) {
 	if day, ok := cached(date); ok {

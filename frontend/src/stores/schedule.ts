@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import { isLessonConducted, lessonPhase, minskDateString, type LessonPhase } from '../features/bells'
 
 function apiOrigin(): string {
   const configured = (import.meta.env.VITE_API_URL || 'http://localhost:8080/query').replace(/\/query\/?$/, '')
@@ -11,6 +12,8 @@ function apiOrigin(): string {
   return configured
 }
 
+// Ключи старой версии, которая хранила отметки и план в localStorage.
+// Оставлены только для однократного переноса данных на сервер.
 const CATALOG_KEY = 'schedule_catalog_v1'
 const MARKS_KEY = 'schedule_marks_v1'
 
@@ -19,6 +22,7 @@ export interface Lesson {
   group: string
   subject: string
   room: string
+  conducted?: boolean
 }
 
 export interface DaySchedule {
@@ -33,6 +37,7 @@ export interface CatalogItem {
   group: string
   subject: string
   plannedHours: number
+  conducted: number
 }
 
 export interface LessonMark {
@@ -52,10 +57,6 @@ export interface SubjectStat {
   remaining: number
 }
 
-function pairKey(group: string, subject: string): string {
-  return `${group.trim().toLowerCase()}|${subject.trim().toLowerCase()}`
-}
-
 function loadJSON<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key)
@@ -65,171 +66,280 @@ function loadJSON<T>(key: string, fallback: T): T {
   }
 }
 
+function authHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const userId = localStorage.getItem('telegram_user_id')
+  if (userId) headers['X-Telegram-User-ID'] = userId
+  const username = localStorage.getItem('telegram_username')
+  if (username) headers['X-Telegram-Username'] = username
+  return headers
+}
+
+function hasAccount(): boolean {
+  return Boolean(localStorage.getItem('telegram_user_id'))
+}
+
+function clampHours(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0
+}
+
 export const useScheduleStore = defineStore('schedule', () => {
   const days = ref<Record<string, DaySchedule>>({})
-  const catalog = ref<CatalogItem[]>(loadJSON(CATALOG_KEY, []))
-  const marks = ref<LessonMark[]>(loadJSON(MARKS_KEY, []))
+  const catalog = ref<CatalogItem[]>([])
+  const now = ref(new Date())
+  let accountReady: Promise<void> | null = null
+  let plansRequest: Promise<void> | null = null
+  let backfilled = false
+  let syncing = false
 
-  function saveCatalog() {
-    localStorage.setItem(CATALOG_KEY, JSON.stringify(catalog.value))
+  function lessonIsConducted(date: string, lesson: Lesson): boolean {
+    if (typeof lesson.conducted === 'boolean') return lesson.conducted
+    return isLessonConducted(date, lesson.period, now.value)
   }
 
-  function saveMarks() {
-    localStorage.setItem(MARKS_KEY, JSON.stringify(marks.value))
-  }
-
-  function ensureCatalog(group: string, subject: string) {
-    if (!group && !subject) return
-    const key = pairKey(group, subject)
-    if (catalog.value.some(item => pairKey(item.group, item.subject) === key)) return
-    catalog.value.push({ group, subject, plannedHours: 0 })
-    saveCatalog()
-  }
-
-  function syncDay(date: string, lessons: Lesson[]) {
-    const previous = marks.value.filter(mark => mark.date === date)
-    const rest = marks.value.filter(mark => mark.date !== date)
-    const next = lessons.map(lesson => {
-      const prev = previous.find(mark => mark.period === lesson.period)
-      ensureCatalog(lesson.group, lesson.subject)
-      return {
-        date,
-        period: lesson.period,
-        group: lesson.group,
-        subject: lesson.subject,
-        room: lesson.room,
-        conducted: prev?.conducted ?? false
-      }
+  // Один перенос старых локальных данных на сервер.
+  async function importLocal() {
+    if (!hasAccount()) return
+    const lessons = loadJSON<LessonMark[]>(MARKS_KEY, [])
+    const plans = loadJSON<Array<{ group: string; subject: string; plannedHours: number }>>(CATALOG_KEY, [])
+    if (lessons.length === 0 && plans.length === 0) return
+    const response = await fetch(`${apiOrigin()}/lessons/import`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ lessons, plans })
     })
-    marks.value = [...rest, ...next]
-    saveMarks()
+    if (!response.ok) throw new Error('Не удалось перенести локальные данные')
+    localStorage.removeItem(MARKS_KEY)
+    localStorage.removeItem(CATALOG_KEY)
   }
 
-  async function fetchDay(date: string): Promise<void> {
+  async function fetchPlans() {
+    if (!hasAccount()) return
+    if (plansRequest) return plansRequest
+    plansRequest = (async () => {
+      const response = await fetch(`${apiOrigin()}/plans`, { headers: authHeaders() })
+      if (!response.ok) throw new Error('Не удалось загрузить план')
+      const data = await response.json() as { plans: CatalogItem[] | null }
+      catalog.value = data.plans ?? []
+    })().finally(() => {
+      plansRequest = null
+    })
+    return plansRequest
+  }
+
+  function ensureAccount(): Promise<void> {
+    accountReady ??= (async () => {
+      await importLocal()
+      await fetchPlans()
+    })().catch(err => {
+      accountReady = null
+      throw err
+    })
+    return accountReady
+  }
+
+  if (typeof window !== 'undefined') {
+    // План нужен и на экранах статистики/настроек, а не только в календаре.
+    void ensureAccount().catch(() => undefined)
+    // Сайт может убрать старые файлы расписания — сохраняем дни месяца заранее,
+    // чтобы проведенные уроки не пропали.
+    void backfillMonth().catch(() => undefined)
+  }
+
+  async function fetchDay(date: string, silent = false): Promise<void> {
     const current = days.value[date]
     if (current?.status === 'loading') return
+    try {
+      await ensureAccount()
+    } catch {
+      // План подтянется при следующем запросе, расписание дня всё равно показываем.
+    }
 
-    days.value[date] = {
-      date,
-      found: current?.found ?? false,
-      lessons: current?.lessons ?? [],
-      status: 'loading',
-      error: null
+    if (!silent) {
+      days.value[date] = {
+        date,
+        found: current?.found ?? false,
+        lessons: current?.lessons ?? [],
+        status: 'loading',
+        error: null
+      }
     }
 
     try {
-      const response = await fetch(`${apiOrigin()}/schedule?date=${encodeURIComponent(date)}`)
+      const response = await fetch(`${apiOrigin()}/schedule?date=${encodeURIComponent(date)}`, {
+        headers: authHeaders()
+      })
       if (!response.ok) {
         throw new Error('Не удалось загрузить расписание')
       }
       const data = await response.json() as { found: boolean; lessons: Lesson[] | null }
-      const lessons = data.lessons ?? []
-      if (data.found) {
-        syncDay(date, lessons)
-      }
       days.value[date] = {
         date,
         found: data.found,
-        lessons,
+        lessons: data.lessons ?? [],
         status: data.found ? 'ready' : 'missing',
         error: null
       }
+      // На сервере могли появиться новые пары — подтягиваем план и счетчики.
+      await fetchPlans().catch(() => undefined)
     } catch (err) {
+      if (silent && current) return
       days.value[date] = {
         date,
         found: false,
-        lessons: [],
+        lessons: current?.lessons ?? [],
         status: 'error',
         error: err instanceof Error ? err.message : 'Не удалось загрузить расписание'
       }
     }
   }
 
+  // Разово сохраняем на сервере дни текущего месяца, чтобы уроки не пропали,
+  // если файлы расписания на сайте удалят.
+  async function backfillMonth(): Promise<void> {
+    if (backfilled) return
+    backfilled = true
+    if (!hasAccount()) return
+    try {
+      await ensureAccount()
+    } catch {
+      // Без плана расписание всё равно можно сохранить.
+    }
+
+    const today = minskDateString(now.value)
+    const [year, month, dayOfMonth] = today.split('-').map(Number)
+    if (!year || !month || !dayOfMonth) return
+
+    const dates: string[] = []
+    for (let day = 1; day <= dayOfMonth; day++) {
+      const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+      if (!days.value[date]) dates.push(date)
+    }
+
+    const chunk = 4
+    for (let i = 0; i < dates.length; i += chunk) {
+      await Promise.all(dates.slice(i, i + chunk).map(date => fetchDay(date, true)))
+    }
+  }
+
+  async function persistDue() {
+    const dates = Object.values(days.value)
+      .filter(day => day.lessons.some(lesson => !lessonIsConducted(day.date, lesson) && isLessonConducted(day.date, lesson.period, now.value)))
+      .map(day => day.date)
+    if (dates.length === 0) return
+    await Promise.all(dates.map(date => fetchDay(date, true)))
+    await fetchPlans().catch(() => undefined)
+  }
+
+  if (typeof window !== 'undefined') {
+    window.setInterval(() => {
+      now.value = new Date()
+      if (syncing) return
+      syncing = true
+      persistDue().finally(() => {
+        syncing = false
+      })
+    }, 15000)
+  }
+
   async function fetchRange(dates: string[]): Promise<void> {
     await Promise.all(dates.map(date => fetchDay(date)))
+    await fetchPlans().catch(() => undefined)
   }
 
   function lessonsFor(date: string): Lesson[] {
     return days.value[date]?.lessons ?? []
   }
 
-  function markFor(date: string, period: number): LessonMark | undefined {
-    return marks.value.find(mark => mark.date === date && mark.period === period)
+  function phase(date: string, period: number): LessonPhase {
+    return lessonPhase(date, period, now.value)
   }
 
   function isConducted(date: string, period: number): boolean {
-    return markFor(date, period)?.conducted ?? false
+    const lesson = lessonsFor(date).find(item => item.period === period)
+    return lesson ? lessonIsConducted(date, lesson) : isLessonConducted(date, period, now.value)
   }
 
-  function setConducted(date: string, lesson: Lesson, conducted: boolean) {
-    const index = marks.value.findIndex(mark => mark.date === date && mark.period === lesson.period)
-    if (index === -1) {
-      marks.value.push({
-        date,
-        period: lesson.period,
-        group: lesson.group,
-        subject: lesson.subject,
-        room: lesson.room,
-        conducted
+  // Ручная отметка урока. Сначала обновляем экран, потом сохраняем на сервере;
+  // при ошибке возвращаем прежнее значение.
+  async function setConducted(date: string, lesson: Lesson, conducted: boolean): Promise<void> {
+    const day = days.value[date]
+    const stored = day?.lessons.find(item => item.period === lesson.period)
+    const previous = stored?.conducted
+    if (stored) stored.conducted = conducted
+
+    if (!hasAccount()) return
+
+    try {
+      const response = await fetch(`${apiOrigin()}/lessons/mark`, {
+        method: 'PUT',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          date,
+          period: lesson.period,
+          group: lesson.group,
+          subject: lesson.subject,
+          room: lesson.room,
+          conducted
+        })
       })
-    } else {
-      const current = marks.value[index]
-      if (!current) return
-      marks.value[index] = { ...current, conducted }
-    }
-    ensureCatalog(lesson.group, lesson.subject)
-    saveMarks()
-  }
-
-  function setDayConducted(date: string, conducted: boolean) {
-    const lessons = lessonsFor(date)
-    for (const lesson of lessons) {
-      setConducted(date, lesson, conducted)
+      if (!response.ok) throw new Error('Не удалось сохранить отметку')
+      await fetchPlans().catch(() => undefined)
+    } catch (err) {
+      if (stored && typeof previous === 'boolean') stored.conducted = previous
+      throw err
     }
   }
 
-  function setPlannedHours(group: string, subject: string, plannedHours: number) {
-    const key = pairKey(group, subject)
-    const item = catalog.value.find(entry => pairKey(entry.group, entry.subject) === key)
-    const hours = Number.isFinite(plannedHours) ? Math.max(0, Math.round(plannedHours)) : 0
-    if (!item) {
-      catalog.value.push({ group, subject, plannedHours: hours })
+  async function setPlannedHours(group: string, subject: string, value: number) {
+    const hours = clampHours(value)
+    const index = catalog.value.findIndex(item => item.group === group && item.subject === subject)
+    const previous = index === -1 ? undefined : catalog.value[index]
+    if (index === -1) {
+      catalog.value.push({ group, subject, plannedHours: hours, conducted: 0 })
     } else {
-      item.plannedHours = hours
+      catalog.value[index] = { ...previous!, plannedHours: hours }
     }
-    saveCatalog()
+
+    if (!hasAccount()) return
+
+    try {
+      const response = await fetch(`${apiOrigin()}/plans`, {
+        method: 'PUT',
+        headers: authHeaders(),
+        body: JSON.stringify({ group, subject, plannedHours: hours })
+      })
+      if (!response.ok) throw new Error('Не удалось сохранить план')
+      await fetchPlans().catch(() => undefined)
+    } catch (err) {
+      if (previous) {
+        catalog.value[index] = previous
+      } else {
+        catalog.value = catalog.value.filter(item => !(item.group === group && item.subject === subject))
+      }
+      throw err
+    }
   }
 
   function conductedCount(date: string): number {
-    return marks.value.filter(mark => mark.date === date && mark.conducted).length
+    return lessonsFor(date).filter(lesson => lessonIsConducted(date, lesson)).length
   }
 
   function lessonCount(date: string): number {
     return lessonsFor(date).length
   }
 
-  const stats = computed<SubjectStat[]>(() => {
-    const conducted = new Map<string, number>()
-    for (const mark of marks.value) {
-      if (!mark.conducted) continue
-      const key = pairKey(mark.group, mark.subject)
-      conducted.set(key, (conducted.get(key) ?? 0) + 1)
-    }
-
-    return [...catalog.value]
-      .map(item => {
-        const done = conducted.get(pairKey(item.group, item.subject)) ?? 0
-        const remaining = item.plannedHours > 0 ? Math.max(0, item.plannedHours - done) : 0
-        return {
-          group: item.group,
-          subject: item.subject,
-          plannedHours: item.plannedHours,
-          conducted: done,
-          remaining
-        }
-      })
+  const stats = computed<SubjectStat[]>(() =>
+    [...catalog.value]
+      .map(item => ({
+        group: item.group,
+        subject: item.subject,
+        plannedHours: item.plannedHours,
+        conducted: item.conducted,
+        remaining: item.plannedHours > 0 ? Math.max(0, item.plannedHours - item.conducted) : 0
+      }))
       .sort((a, b) => a.group.localeCompare(b.group, 'ru') || a.subject.localeCompare(b.subject, 'ru'))
-  })
+  )
 
   const totalConducted = computed(() => stats.value.reduce((sum, item) => sum + item.conducted, 0))
   const totalRemaining = computed(() => stats.value.reduce((sum, item) => sum + item.remaining, 0))
@@ -237,16 +347,15 @@ export const useScheduleStore = defineStore('schedule', () => {
   return {
     days,
     catalog,
-    marks,
     stats,
     totalConducted,
     totalRemaining,
     fetchDay,
     fetchRange,
     lessonsFor,
+    phase,
     isConducted,
     setConducted,
-    setDayConducted,
     setPlannedHours,
     conductedCount,
     lessonCount

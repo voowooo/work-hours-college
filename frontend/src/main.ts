@@ -3,7 +3,7 @@ import './style.css'
 import App from './App.vue'
 import { router } from './router/router.ts'
 import { createPinia } from 'pinia'
-import { init, miniApp, swipeBehavior, closingBehavior, viewport } from '@tma.js/sdk-vue'
+import { init, initData, miniApp, swipeBehavior, closingBehavior, viewport } from '@tma.js/sdk-vue'
 
 const telegramWindow = window as Window & {
   TelegramGameProxy?: { receiveEvent: () => void }
@@ -22,6 +22,13 @@ try {
   closingBehavior.enableConfirmation()
   viewport.expand()
   miniApp.ready()
+  initData.restore()
+  const user = initData.user()
+  if (user) {
+    localStorage.setItem('telegram_user_id', String(user.id))
+    if (user.first_name) localStorage.setItem('telegram_first_name', user.first_name)
+    if (user.username) localStorage.setItem('telegram_username', user.username)
+  }
 } catch (e) {
   console.warn('Telegram SDK setup error:', e)
 }

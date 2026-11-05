@@ -2,22 +2,7 @@
 
 package models
 
-type MonthStats struct {
-	Month      string       `json:"month"`
-	TotalHours float64      `json:"totalHours"`
-	Entries    []*WorkEntry `json:"entries"`
-}
-
-type Mutation struct {
-}
-
 type Query struct {
-}
-
-type UpsertWorkEntryInput struct {
-	Date      string  `json:"date"`
-	ArrivedAt *string `json:"arrivedAt,omitempty"`
-	LeftAt    *string `json:"leftAt,omitempty"`
 }
 
 type User struct {
@@ -25,15 +10,4 @@ type User struct {
 	TelegramID int     `json:"telegramId"`
 	Username   *string `json:"username,omitempty"`
 	CreatedAt  string  `json:"createdAt"`
-}
-
-type WorkEntry struct {
-	ID          string  `json:"id"`
-	UserID      string  `json:"userId"`
-	Date        string  `json:"date"`
-	ArrivedAt   *string `json:"arrivedAt,omitempty"`
-	LeftAt      *string `json:"leftAt,omitempty"`
-	HoursWorked float64 `json:"hoursWorked"`
-	CreatedAt   string  `json:"createdAt"`
-	UpdatedAt   string  `json:"updatedAt"`
 }

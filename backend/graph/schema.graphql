@@ -5,37 +5,6 @@ type User {
   createdAt: String!
 }
 
-type WorkEntry {
-  id: ID!
-  userId: ID!
-  date: String!
-  arrivedAt: String
-  leftAt: String
-  hoursWorked: Float!
-  createdAt: String!
-  updatedAt: String!
-}
-
-type MonthStats {
-  month: String!
-  totalHours: Float!
-  entries: [WorkEntry!]!
-}
-
 type Query {
   me: User
-  workEntry(date: String!): WorkEntry
-  workEntries(startDate: String!, endDate: String!): [WorkEntry!]!
-  monthStats(year: Int!, month: Int!): MonthStats!
-}
-
-input UpsertWorkEntryInput {
-  date: String!
-  arrivedAt: String
-  leftAt: String
-}
-
-type Mutation {
-  upsertWorkEntry(input: UpsertWorkEntryInput!): WorkEntry!
-  deleteWorkEntry(date: String!): Boolean!
 }

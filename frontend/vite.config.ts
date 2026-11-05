@@ -14,6 +14,8 @@ export default defineConfig({
     proxy: {
       '/query': 'http://127.0.0.1:8080',
       '/schedule': 'http://127.0.0.1:8080',
+      '/plans': 'http://127.0.0.1:8080',
+      '/lessons': 'http://127.0.0.1:8080',
     },
   },
 })
