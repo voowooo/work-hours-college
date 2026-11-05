@@ -1,0 +1,81 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+import { RouterLink } from 'vue-router'
+import { motion } from 'motion-v'
+import { useScheduleStore, type CatalogItem } from '../stores/schedule'
+
+const store = useScheduleStore()
+
+const groups = computed(() => {
+  const map = new Map<string, CatalogItem[]>()
+  const items = [...store.catalog].sort(
+    (a, b) => a.group.localeCompare(b.group, 'ru') || a.subject.localeCompare(b.subject, 'ru')
+  )
+  for (const item of items) {
+    const list = map.get(item.group) ?? []
+    list.push(item)
+    map.set(item.group, list)
+  }
+  return [...map.entries()]
+})
+
+function updateHours(item: CatalogItem, event: Event) {
+  const raw = (event.target as HTMLInputElement).value
+  const parsed = raw.trim() === '' ? 0 : Number(raw)
+  store.setPlannedHours(item.group, item.subject, parsed)
+}
+</script>
+
+<template>
+  <div class="bg-bg-primary">
+    <div class="max-w-md mx-auto p-4">
+      <motion.h2
+        class="text-xl font-semibold mb-1"
+        :initial="{ opacity: 0, y: -12 }"
+        :animate="{ opacity: 1, y: 0 }"
+      >
+        Настройки
+      </motion.h2>
+      <p class="text-sm text-text-secondary mb-4">
+        Сколько часов всего нужно провести по каждому предмету и группе. Новые пары подтягиваются из расписания.
+      </p>
+
+      <div v-if="groups.length === 0" class="bg-bg-surface rounded-xl p-6 text-center text-text-secondary">
+        <p>Пока пусто. Откройте день в календаре — предметы появятся сами.</p>
+        <RouterLink to="/" class="inline-block mt-3 text-text-accent text-sm">К календарю</RouterLink>
+      </div>
+
+      <div v-else class="space-y-4">
+        <motion.section
+          v-for="([group, items], groupIndex) in groups"
+          :key="group"
+          class="bg-bg-surface rounded-xl shadow-sm p-4"
+          :initial="{ opacity: 0, y: 16 }"
+          :animate="{ opacity: 1, y: 0 }"
+          :transition="{ delay: groupIndex * 0.04 }"
+        >
+          <h3 class="font-semibold mb-3">{{ group || 'Без группы' }}</h3>
+          <div class="space-y-3">
+            <label
+              v-for="item in items"
+              :key="`${item.group}-${item.subject}`"
+              class="flex items-center justify-between gap-3"
+            >
+              <span class="text-sm">{{ item.subject || 'Без предмета' }}</span>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                inputmode="numeric"
+                class="w-20 rounded-lg bg-bg-surface-secondary px-3 py-2 text-right text-sm outline-none focus:ring-2 focus:ring-bg-accent/40"
+                :value="item.plannedHours || ''"
+                placeholder="0"
+                @change="updateHours(item, $event)"
+              />
+            </label>
+          </div>
+        </motion.section>
+      </div>
+    </div>
+  </div>
+</template>

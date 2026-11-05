@@ -10,8 +10,10 @@ export default defineConfig({
   ],
   server: {
     host: '0.0.0.0',
-    allowedHosts: [
-      'yields-virtually-vol-museum.trycloudflare.com',
-    ],
+    allowedHosts: true,
+    proxy: {
+      '/query': 'http://127.0.0.1:8080',
+      '/schedule': 'http://127.0.0.1:8080',
+    },
   },
 })

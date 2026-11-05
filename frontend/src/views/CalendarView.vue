@@ -1,19 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { motion, AnimatePresence } from 'motion-v'
-import { useWorkHoursStore } from '../stores/workHours'
-import { formatDateLocal, getMonday, addDays, formatDateFull, formatHours } from '../features/date'
+import { useScheduleStore, type Lesson } from '../stores/schedule'
+import { formatDateLocal, getMonday, addDays, formatDateFull } from '../features/date'
 import { useSwipe } from '../features/swipe'
 import WeekSelector from '../components/WeekSelector.vue'
-import TimeEntry from '../components/TimeEntry.vue'
 
-const store = useWorkHoursStore()
+const store = useScheduleStore()
 
 const today = new Date()
 const currentWeekStart = ref(getMonday(new Date()))
 const selectedDate = ref(formatDateLocal(today))
-const showMenu = ref(false)
-const menuRef = ref<HTMLElement | null>(null)
 
 const weekDays = computed(() => {
   const days = []
@@ -28,13 +25,9 @@ const isCurrentWeek = computed(() => {
   return currentWeekStart.value.getTime() === currentMonday.getTime()
 })
 
-const selectedEntry = computed(() => {
-  return store.getEntryByDate(selectedDate.value)
-})
-
-const arrivedAt = computed(() => selectedEntry.value?.arrivedAt || null)
-const leftAt = computed(() => selectedEntry.value?.leftAt || null)
-const hoursWorked = computed(() => selectedEntry.value?.hoursWorked || 0)
+const selectedDay = computed(() => store.days[selectedDate.value])
+const lessons = computed(() => store.lessonsFor(selectedDate.value))
+const conductedCount = computed(() => store.conductedCount(selectedDate.value))
 
 function selectDate(date: string) {
   selectedDate.value = date
@@ -42,60 +35,32 @@ function selectDate(date: string) {
 
 function prevWeek() {
   currentWeekStart.value = addDays(currentWeekStart.value, -7)
-  loadWeekData()
 }
 
 function nextWeek() {
   currentWeekStart.value = addDays(currentWeekStart.value, 7)
-  loadWeekData()
 }
 
 function goToCurrentWeek() {
   currentWeekStart.value = getMonday(new Date())
   selectedDate.value = formatDateLocal(today)
-  loadWeekData()
 }
 
-async function loadWeekData() {
-  const days = weekDays.value
-  if (days.length >= 7 && days[0] && days[6]) {
-    const startDate = formatDateLocal(days[0])
-    const endDate = formatDateLocal(days[6])
-    await store.fetchEntries(startDate, endDate)
-  }
+function loadWeek() {
+  const dates = weekDays.value.map(day => formatDateLocal(day))
+  void store.fetchRange(dates)
 }
 
-async function updateArrivedAt(time: string | null) {
-  await store.upsertEntry(selectedDate.value, time, leftAt.value)
+function toggleLesson(lesson: Lesson) {
+  store.setConducted(selectedDate.value, lesson, !store.isConducted(selectedDate.value, lesson.period))
 }
 
-async function updateLeftAt(time: string | null) {
-  await store.upsertEntry(selectedDate.value, arrivedAt.value, time)
+function markAll(conducted: boolean) {
+  store.setDayConducted(selectedDate.value, conducted)
 }
 
-function toggleMenu() {
-  showMenu.value = !showMenu.value
-}
-
-async function deleteDay() {
-  showMenu.value = false
-  await store.deleteEntry(selectedDate.value)
-}
-
-function handleClickOutside(e: Event) {
-  if (menuRef.value && !menuRef.value.contains(e.target as Node)) {
-    showMenu.value = false
-  }
-}
-
-onMounted(() => {
-  document.addEventListener('click', handleClickOutside)
-  loadWeekData()
-})
-
-onUnmounted(() => {
-  document.removeEventListener('click', handleClickOutside)
-})
+onMounted(loadWeek)
+watch(currentWeekStart, loadWeek)
 
 const { handleTouchStart, handleTouchEnd } = useSwipe({
   onSwipeLeft: nextWeek,
@@ -110,7 +75,6 @@ const { handleTouchStart, handleTouchEnd } = useSwipe({
     @touchend="handleTouchEnd"
   >
     <div class="max-w-md mx-auto p-4">
-      <!-- Week Navigation -->
       <motion.div
         class="flex items-center justify-between mb-4"
         :initial="{ opacity: 0, y: -20 }"
@@ -155,101 +119,127 @@ const { handleTouchStart, handleTouchEnd } = useSwipe({
         </motion.button>
       </motion.div>
 
-      <!-- Week Days -->
       <WeekSelector
         :days="weekDays"
         :selected-date="selectedDate"
         @select="selectDate"
       />
 
-      <!-- Selected Date Info -->
       <motion.div
         class="mt-6 bg-bg-surface rounded-xl shadow-md p-4"
         :initial="{ opacity: 0, y: 30 }"
         :animate="{ opacity: 1, y: 0 }"
         :transition="{ delay: 0.15, type: 'spring', stiffness: 250, damping: 22 }"
       >
-        <div class="flex items-center justify-between mb-4">
-          <motion.h3
-            class="text-lg font-semibold capitalize"
-            :initial="{ opacity: 0, x: -15 }"
-            :animate="{ opacity: 1, x: 0 }"
-            :transition="{ delay: 0.25, duration: 0.3 }"
-            :key="selectedDate"
-          >
-            {{ formatDateFull(selectedDate) }}
-          </motion.h3>
-
-          <div v-if="selectedEntry" ref="menuRef" class="relative">
-            <motion.button
-              @click.stop="toggleMenu"
-              class="p-1.5 rounded-full hover:bg-bg-surface-secondary"
-              :while-hover="{ scale: 1.1 }"
-              :while-tap="{ scale: 0.9 }"
+        <div class="flex items-start justify-between gap-3 mb-4">
+          <div>
+            <motion.h3
+              class="text-lg font-semibold capitalize"
+              :key="selectedDate"
+              :initial="{ opacity: 0, x: -15 }"
+              :animate="{ opacity: 1, x: 0 }"
+              :transition="{ delay: 0.25, duration: 0.3 }"
             >
-              <svg class="w-5 h-5 text-text-secondary" fill="currentColor" viewBox="0 0 20 20">
-                <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
-              </svg>
-            </motion.button>
-
-            <AnimatePresence>
-              <motion.div
-                v-if="showMenu"
-                class="absolute right-0 top-full mt-1 bg-bg-surface rounded-xl shadow-lg border border-border/50 overflow-hidden z-20 min-w-[160px]"
-                :initial="{ opacity: 0, scale: 0.9, y: -8 }"
-                :animate="{ opacity: 1, scale: 1, y: 0 }"
-                :exit="{ opacity: 0, scale: 0.9, y: -8 }"
-                :transition="{ type: 'spring', stiffness: 400, damping: 25 }"
-              >
-                <button
-                  @click="deleteDay"
-                  class="w-full px-4 py-2.5 text-left text-sm text-bg-danger hover:bg-bg-danger/10 transition-colors flex items-center gap-2"
-                >
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                  </svg>
-                  Удалить день
-                </button>
-              </motion.div>
-            </AnimatePresence>
+              {{ formatDateFull(selectedDate) }}
+            </motion.h3>
+            <p v-if="lessons.length" class="text-sm text-text-secondary mt-0.5">
+              {{ conductedCount }} из {{ lessons.length }} проведено
+            </p>
+          </div>
+          <div v-if="lessons.length" class="flex gap-1">
+            <button
+              class="text-xs px-2.5 py-1.5 rounded-lg bg-bg-accent/10 text-text-accent"
+              @click="markAll(true)"
+            >
+              Все
+            </button>
+            <button
+              class="text-xs px-2.5 py-1.5 rounded-lg bg-bg-surface-secondary text-text-secondary"
+              @click="markAll(false)"
+            >
+              Сброс
+            </button>
           </div>
         </div>
 
-        <div class="space-y-4">
-          <TimeEntry
-            label="Пришел"
-            :time="arrivedAt"
-            placeholder="Время прихода"
-            @update="updateArrivedAt"
-          />
+        <div v-if="selectedDay?.status === 'loading'" class="space-y-2">
+          <div v-for="n in 4" :key="n" class="h-16 rounded-lg skeleton-shimmer bg-bg-surface-secondary" />
+        </div>
 
-          <TimeEntry
-            label="Ушел"
-            :time="leftAt"
-            placeholder="Время ухода"
-            @update="updateLeftAt"
-          />
-
-          <!-- Hours Worked -->
-          <motion.div
-            class="p-3 bg-bg-accent/10 rounded-lg"
-            :initial="{ opacity: 0, scale: 0.9 }"
-            :animate="{ opacity: 1, scale: 1 }"
-            :transition="{ delay: 0.3, type: 'spring', stiffness: 300, damping: 20 }"
-            :key="hoursWorked"
+        <div v-else-if="selectedDay?.status === 'error'" class="text-center py-8">
+          <p class="text-text-secondary">{{ selectedDay.error }}</p>
+          <button
+            class="mt-3 text-sm text-text-accent"
+            @click="store.fetchDay(selectedDate)"
           >
-            <p class="text-sm text-text-accent">Отработано</p>
-            <motion.p
-              class="text-2xl font-bold text-text-primary"
-              :initial="{ opacity: 0, y: 8 }"
+            Повторить
+          </button>
+        </div>
+
+        <div v-else-if="selectedDay?.status === 'missing'" class="text-center py-8 text-text-secondary">
+          <p>На эту дату расписания нет</p>
+        </div>
+
+        <div v-else-if="lessons.length === 0" class="text-center py-8 text-text-secondary">
+          <p>В этот день уроков нет</p>
+        </div>
+
+        <div v-else class="space-y-2">
+          <AnimatePresence>
+            <motion.button
+              v-for="(lesson, index) in lessons"
+              :key="`${selectedDate}-${lesson.period}`"
+              class="w-full flex items-center gap-3 p-3 rounded-lg text-left transition-colors"
+              :class="store.isConducted(selectedDate, lesson.period) ? 'bg-bg-accent/10' : 'bg-bg-surface-secondary'"
+              :initial="{ opacity: 0, y: 12 }"
               :animate="{ opacity: 1, y: 0 }"
-              :transition="{ delay: 0.4, duration: 0.25 }"
+              :transition="{ delay: index * 0.04, type: 'spring', stiffness: 320, damping: 24 }"
+              :while-tap="{ scale: 0.98 }"
+              @click="toggleLesson(lesson)"
             >
-              {{ formatHours(hoursWorked) }}
-            </motion.p>
-          </motion.div>
+              <div
+                class="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-sm font-bold"
+                :class="store.isConducted(selectedDate, lesson.period) ? 'bg-bg-accent text-text-on-accent' : 'bg-bg-surface text-text-secondary'"
+              >
+                {{ lesson.period }}
+              </div>
+              <div class="min-w-0 flex-1">
+                <p class="font-semibold truncate">
+                  {{ lesson.subject || 'Без предмета' }}
+                  <span class="font-medium text-text-secondary">· {{ lesson.group || 'без группы' }}</span>
+                </p>
+                <p class="text-xs text-text-secondary mt-0.5">
+                  {{ lesson.room ? `ауд. ${lesson.room}` : 'аудитория не указана' }}
+                </p>
+              </div>
+              <span
+                class="text-[11px] font-medium shrink-0"
+                :class="store.isConducted(selectedDate, lesson.period) ? 'text-text-accent' : 'text-text-muted'"
+              >
+                {{ store.isConducted(selectedDate, lesson.period) ? 'проведён' : 'не проведён' }}
+              </span>
+            </motion.button>
+          </AnimatePresence>
         </div>
       </motion.div>
     </div>
   </div>
 </template>
+
+<style scoped>
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-bg-surface-secondary) 25%,
+    var(--color-bg-surface) 50%,
+    var(--color-bg-surface-secondary) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+</style>

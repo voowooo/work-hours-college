@@ -1,133 +1,106 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
-import { motion, AnimatePresence } from 'motion-v'
-import { useWorkHoursStore } from '../stores/workHours'
-import { getMonthName, getMonthDays, formatHours } from '../features/date'
+import { computed } from 'vue'
+import { RouterLink } from 'vue-router'
+import { motion } from 'motion-v'
+import { useScheduleStore, type SubjectStat } from '../stores/schedule'
 import StatCard from '../components/StatCard.vue'
-import MonthCalendar from '../components/MonthCalendar.vue'
 
-const store = useWorkHoursStore()
+const store = useScheduleStore()
 
-const today = new Date()
-const currentYear = ref(today.getFullYear())
-const currentMonth = ref(today.getMonth())
-
-const monthName = computed(() => {
-  return getMonthName(new Date(currentYear.value, currentMonth.value))
-})
-
-const days = computed(() => {
-  return getMonthDays(currentYear.value, currentMonth.value)
-})
-
-const totalMonthHours = computed(() => {
-  return days.value.reduce((sum, d) => {
-    return sum + (d.date ? store.getHoursForDate(d.date) : 0)
-  }, 0)
-})
-
-const daysWorked = computed(() => {
-  return days.value.filter(d => d.day > 0 && d.date && store.getHoursForDate(d.date) > 0).length
-})
-
-function prevMonth() {
-  if (currentMonth.value === 0) {
-    currentMonth.value = 11
-    currentYear.value--
-  } else {
-    currentMonth.value--
+const groups = computed(() => {
+  const map = new Map<string, SubjectStat[]>()
+  for (const item of store.stats) {
+    const list = map.get(item.group) ?? []
+    list.push(item)
+    map.set(item.group, list)
   }
-}
-
-function nextMonth() {
-  if (currentMonth.value === 11) {
-    currentMonth.value = 0
-    currentYear.value++
-  } else {
-    currentMonth.value++
-  }
-}
-
-async function loadStats() {
-  await store.fetchMonthStats(currentYear.value, currentMonth.value + 1)
-}
-
-onMounted(() => {
-  loadStats()
+  return [...map.entries()]
 })
 
-watch([currentYear, currentMonth], () => {
-  loadStats()
-})
+function conductedWidth(item: SubjectStat): string {
+  const scale = Math.max(item.plannedHours, item.conducted, 1)
+  return `${(item.conducted / scale) * 100}%`
+}
+
+function remainingWidth(item: SubjectStat): string {
+  if (item.plannedHours <= item.conducted) return '0%'
+  const scale = Math.max(item.plannedHours, item.conducted, 1)
+  return `${((item.plannedHours - item.conducted) / scale) * 100}%`
+}
 </script>
 
 <template>
   <div class="bg-bg-primary">
     <div class="max-w-md mx-auto p-4">
-      <!-- Header -->
-      <motion.div
-        class="flex items-center justify-between mb-4"
-        :initial="{ opacity: 0, y: -20 }"
+      <motion.h2
+        class="text-xl font-semibold mb-4"
+        :initial="{ opacity: 0, y: -12 }"
         :animate="{ opacity: 1, y: 0 }"
-        :transition="{ duration: 0.3, ease: 'easeOut' }"
       >
-        <motion.button
-          @click="prevMonth"
-          class="p-2 rounded-full hover:bg-bg-surface-secondary transition-colors"
-          :while-hover="{ scale: 1.15, x: -3 }"
-          :while-tap="{ scale: 0.85 }"
-          :transition="{ type: 'spring', stiffness: 400, damping: 17 }"
-        >
-          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
-          </svg>
-        </motion.button>
+        Статистика
+      </motion.h2>
 
-        <motion.h2
-          class="text-xl font-semibold capitalize"
-          :key="`${currentYear}-${currentMonth}`"
-          :initial="{ opacity: 0, y: -10, scale: 0.95 }"
-          :animate="{ opacity: 1, y: 0, scale: 1 }"
-          :transition="{ duration: 0.2 }"
-        >
-          {{ monthName }} {{ currentYear }}
-        </motion.h2>
-
-        <motion.button
-          @click="nextMonth"
-          class="p-2 rounded-full hover:bg-bg-surface-secondary transition-colors"
-          :while-hover="{ scale: 1.15, x: 3 }"
-          :while-tap="{ scale: 0.85 }"
-          :transition="{ type: 'spring', stiffness: 400, damping: 17 }"
-        >
-          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-          </svg>
-        </motion.button>
-      </motion.div>
-
-      <!-- Stats Summary -->
       <div class="grid grid-cols-2 gap-3 mb-4">
-        <StatCard
-          :value="formatHours(totalMonthHours)"
-          label="часов за месяц"
-          color="blue"
-        />
-        <StatCard
-          :value="String(daysWorked)"
-          label="дней работал"
-          color="purple"
-        />
+        <StatCard :value="store.totalConducted" label="проведено уроков" color="green" />
+        <StatCard :value="store.totalRemaining" label="осталось по плану" color="purple" />
       </div>
 
-      <!-- Calendar -->
-      <AnimatePresence mode="wait">
-        <MonthCalendar
-          :key="`${currentYear}-${currentMonth}`"
-          :year="currentYear"
-          :month="currentMonth"
-        />
-      </AnimatePresence>
+      <div class="flex items-center gap-4 text-xs text-text-secondary mb-4 px-1">
+        <span class="inline-flex items-center gap-1.5">
+          <span class="w-3 h-3 rounded-sm bg-bg-accent" />
+          проведено
+        </span>
+        <span class="inline-flex items-center gap-1.5">
+          <span class="w-3 h-3 rounded-sm bg-hours-medium" />
+          осталось
+        </span>
+      </div>
+
+      <div v-if="groups.length === 0" class="bg-bg-surface rounded-xl p-6 text-center text-text-secondary">
+        <p>Предметы появятся, когда откроете дни с расписанием.</p>
+        <RouterLink to="/" class="inline-block mt-3 text-text-accent text-sm">К календарю</RouterLink>
+      </div>
+
+      <div v-else class="space-y-4">
+        <motion.section
+          v-for="([group, items], groupIndex) in groups"
+          :key="group"
+          class="bg-bg-surface rounded-xl shadow-sm p-4"
+          :initial="{ opacity: 0, y: 16 }"
+          :animate="{ opacity: 1, y: 0 }"
+          :transition="{ delay: groupIndex * 0.04 }"
+        >
+          <h3 class="font-semibold mb-3">{{ group || 'Без группы' }}</h3>
+          <div class="space-y-3">
+            <div v-for="item in items" :key="`${item.group}-${item.subject}`">
+              <div class="flex items-baseline justify-between gap-2 mb-1">
+                <p class="text-sm font-medium">{{ item.subject || 'Без предмета' }}</p>
+                <p class="text-xs text-text-secondary shrink-0">
+                  <template v-if="item.plannedHours > 0">
+                    {{ item.conducted }} / {{ item.plannedHours }}
+                  </template>
+                  <template v-else>
+                    {{ item.conducted }} · план не задан
+                  </template>
+                </p>
+              </div>
+              <div class="h-3 rounded-full bg-bg-surface-secondary overflow-hidden flex">
+                <div
+                  class="h-full bg-bg-accent transition-all duration-300"
+                  :style="{ width: conductedWidth(item) }"
+                />
+                <div
+                  class="h-full bg-hours-medium transition-all duration-300"
+                  :style="{ width: remainingWidth(item) }"
+                />
+              </div>
+              <p v-if="item.plannedHours > 0 && item.conducted > item.plannedHours" class="text-[11px] text-hours-low mt-1">
+                План превышен на {{ item.conducted - item.plannedHours }}
+              </p>
+            </div>
+          </div>
+        </motion.section>
+      </div>
     </div>
   </div>
 </template>

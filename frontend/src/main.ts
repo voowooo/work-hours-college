@@ -5,11 +5,14 @@ import { router } from './router/router.ts'
 import { createPinia } from 'pinia'
 import { init, miniApp, swipeBehavior, closingBehavior, viewport } from '@tma.js/sdk-vue'
 
-// Инициализируем SDK
-init()
+const telegramWindow = window as Window & {
+  TelegramGameProxy?: { receiveEvent: () => void }
+}
+telegramWindow.TelegramGameProxy = telegramWindow.TelegramGameProxy || { receiveEvent() {} }
 
-// Настраиваем поведение Telegram Mini App
+// Настраиваем поведение Telegram Mini App. Вне Telegram init() бросает ошибку.
 try {
+  init()
   miniApp.mount()
   swipeBehavior.mount()
   closingBehavior.mount()

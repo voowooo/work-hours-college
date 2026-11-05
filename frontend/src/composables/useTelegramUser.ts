@@ -10,8 +10,13 @@ export function useTelegramUser() {
   onMounted(() => {
     if (isInitialized.value) return
 
-    initData.restore()
-    const user = initData.user()
+    let user
+    try {
+      initData.restore()
+      user = initData.user()
+    } catch {
+      return
+    }
 
     if (user) {
       telegramUserId.value = String(user.id)

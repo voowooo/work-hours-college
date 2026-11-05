@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { motion } from 'motion-v'
-import { formatDateLocal, isToday, getDayName, formatHours } from '../features/date'
-import { useWorkHoursStore } from '../stores/workHours'
+import { formatDateLocal, isToday, getDayName } from '../features/date'
+import { useScheduleStore } from '../stores/schedule'
 
 const props = defineProps<{
   days: Date[]
@@ -13,7 +13,7 @@ const emit = defineEmits<{
   select: [date: string]
 }>()
 
-const store = useWorkHoursStore()
+const store = useScheduleStore()
 
 const weekRange = computed(() => {
   if (props.days.length < 7) return ''
@@ -30,8 +30,11 @@ function isSelected(date: Date): boolean {
   return formatDateLocal(date) === props.selectedDate
 }
 
-function getHours(date: Date): number {
-  return store.getHoursForDate(formatDateLocal(date))
+function lessonLabel(date: Date): string {
+  const key = formatDateLocal(date)
+  const total = store.lessonCount(key)
+  if (!total) return ''
+  return `${store.conductedCount(key)}/${total}`
 }
 </script>
 
@@ -77,7 +80,7 @@ function getHours(date: Date): number {
           {{ day.getDate() }}
         </span>
         <motion.span
-          v-if="getHours(day) > 0"
+          v-if="lessonLabel(day)"
           :class="[
             'text-[10px] mt-0.5',
             isSelected(day) ? 'text-text-on-accent/70' : 'text-text-muted'
@@ -86,7 +89,7 @@ function getHours(date: Date): number {
           :animate="{ opacity: 1, scale: 1 }"
           :transition="{ delay: index * 0.04 + 0.15, type: 'spring', stiffness: 400, damping: 15 }"
         >
-          {{ formatHours(getHours(day)) }}
+          {{ lessonLabel(day) }}
         </motion.span>
       </motion.button>
     </div>

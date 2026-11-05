@@ -10,6 +10,7 @@ import (
 	"github.com/rs/cors"
 	"github.com/workhourscounter/backend/graph"
 	"github.com/workhourscounter/backend/internal/db"
+	"github.com/workhourscounter/backend/internal/schedule"
 	"github.com/workhourscounter/backend/pkg/auth"
 )
 
@@ -21,20 +22,6 @@ func main() {
 		port = defaultPort
 	}
 
-	database, err := db.New()
-	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
-	}
-	defer database.Close()
-
-	resolver := &graph.Resolver{DB: database}
-
-	srv := handler.NewDefaultServer(
-		graph.NewExecutableSchema(graph.Config{
-			Resolvers: resolver,
-		}),
-	)
-
 	c := cors.New(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
@@ -45,8 +32,23 @@ func main() {
 	})
 
 	mux := http.NewServeMux()
-	mux.Handle("/query", auth.Middleware(srv))
-	mux.Handle("/", playground.Handler("GraphQL Playground", "/query"))
+	mux.HandleFunc("/schedule", schedule.Handler)
+
+	database, err := db.New()
+	if err != nil {
+		log.Printf("Database unavailable, schedule endpoint only: %v", err)
+	} else {
+		defer database.Close()
+
+		resolver := &graph.Resolver{DB: database}
+		srv := handler.NewDefaultServer(
+			graph.NewExecutableSchema(graph.Config{
+				Resolvers: resolver,
+			}),
+		)
+		mux.Handle("/query", auth.Middleware(srv))
+		mux.Handle("/", playground.Handler("GraphQL Playground", "/query"))
+	}
 
 	log.Printf("Server running on http://localhost:%s/", port)
 	log.Printf("Playground: http://localhost:%s/", port)
