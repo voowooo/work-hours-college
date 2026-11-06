@@ -23,6 +23,8 @@ export interface Lesson {
   subject: string
   room: string
   conducted?: boolean
+  // Урок добавлен вручную (нет в PDF) — его можно удалить.
+  added?: boolean
 }
 
 export interface DaySchedule {
@@ -57,6 +59,11 @@ export interface SubjectStat {
   remaining: number
 }
 
+export interface NotificationStatus {
+  enabled: boolean
+  mutedUntil: string
+}
+
 function loadJSON<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key)
@@ -86,6 +93,7 @@ function clampHours(value: number): number {
 export const useScheduleStore = defineStore('schedule', () => {
   const days = ref<Record<string, DaySchedule>>({})
   const catalog = ref<CatalogItem[]>([])
+  const notifications = ref<NotificationStatus | null>(null)
   const now = ref(new Date())
   let accountReady: Promise<void> | null = null
   let plansRequest: Promise<void> | null = null
@@ -321,8 +329,97 @@ export const useScheduleStore = defineStore('schedule', () => {
     }
   }
 
+  // Урок, добавленный вручную: его нет в PDF, но он участвует в статистике
+  // и отметках по звонкам, как обычный урок.
+  async function addLesson(date: string, lesson: Omit<Lesson, 'conducted' | 'added'>): Promise<void> {
+    const response = await fetch(`${apiOrigin()}/lessons/add`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ date, ...lesson })
+    })
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      throw new Error(text.trim() || 'Не удалось добавить урок')
+    }
+    const data = await response.json() as { lesson: Lesson }
+    const day = days.value[date]
+    const lessons = [...(day?.lessons ?? []), data.lesson].sort((a, b) => a.period - b.period)
+    days.value[date] = {
+      date,
+      found: true,
+      lessons,
+      status: 'ready',
+      error: null
+    }
+    await fetchPlans().catch(() => undefined)
+  }
+
+  // Удаление можно только урока, добавленного вручную: уроки из PDF вернутся
+  // при следующей загрузке расписания.
+  async function removeLesson(date: string, period: number): Promise<void> {
+    const day = days.value[date]
+    const previous = day?.lessons ?? []
+    if (day) day.lessons = previous.filter(item => item.period !== period)
+
+    try {
+      const response = await fetch(`${apiOrigin()}/lessons/remove`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ date, period })
+      })
+      if (!response.ok) throw new Error('Не удалось удалить урок')
+      await fetchPlans().catch(() => undefined)
+    } catch (err) {
+      if (day) day.lessons = previous
+      throw err
+    }
+  }
+
   function conductedCount(date: string): number {
     return lessonsFor(date).filter(lesson => lessonIsConducted(date, lesson)).length
+  }
+
+  // --- Уведомления бота -----------------------------------------------------
+
+  async function fetchNotifications(): Promise<void> {
+    if (!hasAccount()) {
+      notifications.value = null
+      return
+    }
+    const response = await fetch(`${apiOrigin()}/notifications`, { headers: authHeaders() })
+    if (!response.ok) throw new Error('Не удалось загрузить настройки уведомлений')
+    notifications.value = await response.json() as NotificationStatus
+  }
+
+  // Включение уведомлений заодно снимает режим «до завтра».
+  async function setNotificationsEnabled(enabled: boolean): Promise<void> {
+    const previous = notifications.value
+    notifications.value = { enabled, mutedUntil: enabled ? '' : (previous?.mutedUntil ?? '') }
+
+    if (!hasAccount()) return
+
+    try {
+      const response = await fetch(`${apiOrigin()}/notifications`, {
+        method: 'PUT',
+        headers: authHeaders(),
+        body: JSON.stringify({ enabled })
+      })
+      if (!response.ok) throw new Error('Не удалось сохранить настройку')
+      notifications.value = await response.json() as NotificationStatus
+    } catch (err) {
+      notifications.value = previous
+      throw err
+    }
+  }
+
+  // Пробное сообщение в Telegram с кнопкой «отключить до завтра».
+  async function sendTestNotification(): Promise<void> {
+    const response = await fetch(`${apiOrigin()}/notifications/test`, {
+      method: 'POST',
+      headers: authHeaders()
+    })
+    const data = await response.json() as { ok: boolean; error?: string }
+    if (!response.ok || !data.ok) throw new Error(data.error || 'Не удалось отправить сообщение')
   }
 
   function lessonCount(date: string): number {
@@ -347,6 +444,7 @@ export const useScheduleStore = defineStore('schedule', () => {
   return {
     days,
     catalog,
+    notifications,
     stats,
     totalConducted,
     totalRemaining,
@@ -357,6 +455,11 @@ export const useScheduleStore = defineStore('schedule', () => {
     isConducted,
     setConducted,
     setPlannedHours,
+    addLesson,
+    removeLesson,
+    fetchNotifications,
+    setNotificationsEnabled,
+    sendTestNotification,
     conductedCount,
     lessonCount
   }

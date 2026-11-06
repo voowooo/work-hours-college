@@ -86,6 +86,83 @@ function toggleLesson(lesson: Lesson) {
   void store.setConducted(selectedDate.value, lesson, !isDone(lesson)).catch(() => undefined)
 }
 
+// --- Добавление урока вручную ------------------------------------------------
+
+const showAddForm = ref(false)
+const addPeriod = ref(0)
+const addGroup = ref('')
+const addSubject = ref('')
+const addRoom = ref('')
+const addError = ref('')
+const addSaving = ref(false)
+
+const occupiedPeriods = computed(() => new Set(lessons.value.map(lesson => lesson.period)))
+
+// Свободные пары — те, что есть в таблице звонков на эту дату и ещё не заняты.
+const freePeriods = computed(() => {
+  const withBells: number[] = []
+  for (let period = 1; period <= 14; period++) {
+    if (lessonBell(selectedDate.value, period)) withBells.push(period)
+  }
+  const pool = withBells.length > 0 ? withBells : Array.from({ length: 14 }, (_, i) => i + 1)
+  return pool.filter(period => !occupiedPeriods.value.has(period))
+})
+
+const groupOptions = computed(() =>
+  [...new Set(store.catalog.map(item => item.group))]
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b, 'ru'))
+)
+
+// Список предметов: сначала предметы выбранной группы, иначе все известные.
+const subjectOptions = computed(() => {
+  const group = addGroup.value.trim()
+  const own = store.catalog.filter(item => item.group === group).map(item => item.subject)
+  const source = own.length > 0 ? own : store.catalog.map(item => item.subject)
+  return [...new Set(source)].filter(Boolean).sort((a, b) => a.localeCompare(b, 'ru'))
+})
+
+function openAddForm() {
+  addError.value = ''
+  addPeriod.value = freePeriods.value[0] ?? 0
+  showAddForm.value = true
+}
+
+async function submitAdd() {
+  addError.value = ''
+  const group = addGroup.value.trim()
+  const subject = addSubject.value.trim()
+  if (!addPeriod.value) {
+    addError.value = 'Выберите пару'
+    return
+  }
+  if (!group || !subject) {
+    addError.value = 'Укажите группу и предмет'
+    return
+  }
+  addSaving.value = true
+  try {
+    await store.addLesson(selectedDate.value, {
+      period: addPeriod.value,
+      group,
+      subject,
+      room: addRoom.value.trim()
+    })
+    showAddForm.value = false
+    addGroup.value = ''
+    addSubject.value = ''
+    addRoom.value = ''
+  } catch (err) {
+    addError.value = err instanceof Error ? err.message : 'Не удалось добавить урок'
+  } finally {
+    addSaving.value = false
+  }
+}
+
+function removeAddedLesson(lesson: Lesson) {
+  void store.removeLesson(selectedDate.value, lesson.period).catch(() => undefined)
+}
+
 onMounted(loadWeek)
 watch(currentWeekStart, loadWeek)
 
@@ -139,7 +216,55 @@ const { handleTouchStart, handleTouchEnd } = useSwipe({
               {{ conductedCount }} из {{ lessons.length }} проведено
             </p>
           </div>
+          <motion.button class="shrink-0 text-sm text-text-accent px-3 py-1.5 rounded-lg bg-bg-surface-secondary"
+            :while-tap="{ scale: 0.92 }" @click="showAddForm ? (showAddForm = false) : openAddForm()">
+            {{ showAddForm ? 'Отмена' : '+ Урок' }}
+          </motion.button>
         </div>
+
+        <AnimatePresence>
+          <motion.div v-if="showAddForm" class="mb-4 bg-bg-surface-secondary rounded-lg p-3 space-y-2"
+            :initial="{ opacity: 0, height: 0 }" :animate="{ opacity: 1, height: 'auto' }"
+            :exit="{ opacity: 0, height: 0 }" :transition="{ duration: 0.2 }">
+            <p class="text-sm font-semibold">Новый урок</p>
+            <label class="block text-xs text-text-secondary">
+              Пара
+              <select v-model.number="addPeriod"
+                class="mt-1 w-full rounded-lg bg-bg-surface px-3 py-2 text-sm text-text-primary outline-none focus:ring-2 focus:ring-bg-accent/40">
+                <option :value="0" disabled>Выберите пару</option>
+                <option v-for="period in freePeriods" :key="period" :value="period">
+                  Пара {{ period }}<template v-if="bellLabel(period)"> · {{ bellLabel(period) }}</template>
+                </option>
+              </select>
+            </label>
+            <label class="block text-xs text-text-secondary">
+              Группа
+              <input v-model="addGroup" list="calendar-groups" placeholder="Например, 100б"
+                class="mt-1 w-full rounded-lg bg-bg-surface px-3 py-2 text-sm text-text-primary outline-none focus:ring-2 focus:ring-bg-accent/40" />
+            </label>
+            <datalist id="calendar-groups">
+              <option v-for="group in groupOptions" :key="group" :value="group" />
+            </datalist>
+            <label class="block text-xs text-text-secondary">
+              Предмет
+              <input v-model="addSubject" list="calendar-subjects" placeholder="Например, Физи"
+                class="mt-1 w-full rounded-lg bg-bg-surface px-3 py-2 text-sm text-text-primary outline-none focus:ring-2 focus:ring-bg-accent/40" />
+            </label>
+            <datalist id="calendar-subjects">
+              <option v-for="subject in subjectOptions" :key="subject" :value="subject" />
+            </datalist>
+            <label class="block text-xs text-text-secondary">
+              Аудитория <span class="opacity-60">(необязательно)</span>
+              <input v-model="addRoom" placeholder="Например, 402"
+                class="mt-1 w-full rounded-lg bg-bg-surface px-3 py-2 text-sm text-text-primary outline-none focus:ring-2 focus:ring-bg-accent/40" />
+            </label>
+            <p v-if="addError" class="text-xs text-hours-low">{{ addError }}</p>
+            <button class="w-full rounded-lg bg-bg-accent text-text-on-accent py-2 text-sm font-medium disabled:opacity-50"
+              :disabled="addSaving" @click="submitAdd">
+              {{ addSaving ? 'Добавляем…' : 'Добавить урок' }}
+            </button>
+          </motion.div>
+        </AnimatePresence>
 
         <div v-if="selectedDay?.status === 'loading'" class="space-y-2">
           <div v-for="n in 4" :key="n" class="h-16 rounded-lg skeleton-shimmer bg-bg-surface-secondary" />
@@ -200,6 +325,12 @@ const { handleTouchStart, handleTouchEnd } = useSwipe({
                 :class="isDone(lesson) ? 'text-text-accent' : store.phase(selectedDate, lesson.period) === 'ongoing' ? 'text-hours-medium' : 'text-text-muted'">
                 {{ phaseLabel(lesson) }}
               </span>
+              <button v-if="lesson.added" class="shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-text-secondary hover:text-hours-low"
+                aria-label="Удалить урок" @click.stop="removeAddedLesson(lesson)">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </motion.div>
           </AnimatePresence>
         </div>

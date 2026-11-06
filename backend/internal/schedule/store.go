@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -48,6 +50,21 @@ type markBody struct {
 	Subject   string `json:"subject"`
 	Room      string `json:"room"`
 	Conducted bool   `json:"conducted"`
+}
+
+// addBody — урок, добавленный вручную (нет в PDF расписания).
+type addBody struct {
+	Date    string `json:"date"`
+	Period  int    `json:"period"`
+	Group   string `json:"group"`
+	Subject string `json:"subject"`
+	Room    string `json:"room"`
+}
+
+// removeBody — удаление урока, добавленного вручную.
+type removeBody struct {
+	Date   string `json:"date"`
+	Period int    `json:"period"`
 }
 
 func (s *Service) Schedule(w http.ResponseWriter, r *http.Request) {
@@ -152,6 +169,139 @@ func (s *Service) Mark(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
+// Add — урок, добавленный вручную (нет в PDF): пара, группа, предмет, аудитория.
+// Урок попадает в базу с флагом added, поэтому его не вычистит следующая
+// загрузка расписания, а отметка «проведён» считается по звонкам как обычно.
+func (s *Service) Add(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.DB == nil {
+		http.Error(w, "database unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	telegramID, username, ok := telegramUser(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var body addBody
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	body.Date = strings.TrimSpace(body.Date)
+	body.Group = strings.TrimSpace(body.Group)
+	body.Subject = strings.TrimSpace(body.Subject)
+	body.Room = strings.TrimSpace(body.Room)
+	if _, err := time.Parse("2006-01-02", body.Date); err != nil || body.Period < 1 || body.Period > 14 {
+		http.Error(w, "date must be YYYY-MM-DD and period 1-14", http.StatusBadRequest)
+		return
+	}
+	if body.Group == "" || body.Subject == "" {
+		http.Error(w, "group and subject are required", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	lesson, err := s.addLesson(ctx, telegramID, username, body)
+	if err != nil {
+		if errors.Is(err, errPeriodTaken) {
+			http.Error(w, "На эту пару уже есть урок", http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "lesson": lesson})
+}
+
+// Remove — удаляет урок, добавленный вручную. Уроки из PDF не трогаем:
+// они всё равно вернутся при следующей загрузке расписания.
+func (s *Service) Remove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.DB == nil {
+		http.Error(w, "database unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	telegramID, username, ok := telegramUser(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var body removeBody
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if _, err := time.Parse("2006-01-02", body.Date); err != nil || body.Period < 1 || body.Period > 14 {
+		http.Error(w, "date must be YYYY-MM-DD and period 1-14", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	userID, err := s.ensureUser(ctx, telegramID, username)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	res, err := s.DB.ExecContext(ctx, `
+		DELETE FROM schedule_lessons
+		WHERE user_id = $1 AND date = $2 AND period = $3 AND added = TRUE
+	`, userID, body.Date, body.Period)
+	if err != nil {
+		http.Error(w, fmt.Errorf("remove lesson: %w", err).Error(), http.StatusInternalServerError)
+		return
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		http.Error(w, "Добавленный урок не найден", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+// errPeriodTaken — на эту пару уже есть урок (уникальность user+date+period).
+var errPeriodTaken = errors.New("period already taken")
+
+func (s *Service) addLesson(ctx context.Context, telegramID int64, username string, body addBody) (Lesson, error) {
+	userID, err := s.ensureUser(ctx, telegramID, username)
+	if err != nil {
+		return Lesson{}, err
+	}
+	// Отметка «проведён» — как у уроков из PDF: по времени звонков.
+	conducted := lessonEnded(body.Date, body.Period, time.Now())
+	res, err := s.DB.ExecContext(ctx, `
+		INSERT INTO schedule_lessons (user_id, date, period, group_name, subject, room, conducted, added, conducted_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, CASE WHEN $7 THEN NOW() ELSE NULL END)
+		ON CONFLICT (user_id, date, period) DO NOTHING
+	`, userID, body.Date, body.Period, body.Group, body.Subject, body.Room, conducted)
+	if err != nil {
+		return Lesson{}, fmt.Errorf("add lesson: %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return Lesson{}, errPeriodTaken
+	}
+	if err := ensurePlan(ctx, s.DB, userID, body.Group, body.Subject); err != nil {
+		return Lesson{}, err
+	}
+	return Lesson{
+		Period:    body.Period,
+		Group:     body.Group,
+		Subject:   body.Subject,
+		Room:      body.Room,
+		Conducted: conducted,
+		Added:     true,
+	}, nil
+}
+
 func (s *Service) Import(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -196,7 +346,7 @@ func (s *Service) day(ctx context.Context, r *http.Request, date string) (DaySch
 		if err != nil {
 			return DaySchedule{}, err
 		}
-		today, _ := minskClock(now)
+		today, _ := MinskClock(now)
 		if date < today && len(stored) > 0 && allConducted(stored) {
 			return DaySchedule{Date: date, Found: true, Lessons: stored}, nil
 		}
@@ -231,6 +381,22 @@ func (s *Service) day(ctx context.Context, r *http.Request, date string) (DaySch
 	return DaySchedule{Date: date, Found: true, Lessons: merged}, nil
 }
 
+// StoreLessons сохраняет уроки дня для пользователя. Используется ботом, чтобы
+// расписание дня оказалось в базе даже если приложение не открывали.
+func (s *Service) StoreLessons(ctx context.Context, telegramID int64, date string, lessons []Lesson) error {
+	if s.DB == nil {
+		return nil
+	}
+	_, err := s.mergeLessons(ctx, telegramID, "", date, lessons, time.Now())
+	return err
+}
+
+// EnsureUser создаёт пользователя при первом обращении. Нужно боту, чтобы
+// подключить уведомления до того, как человек откроет приложение.
+func (s *Service) EnsureUser(ctx context.Context, telegramID int64, username string) (string, error) {
+	return s.ensureUser(ctx, telegramID, username)
+}
+
 func (s *Service) ensureUser(ctx context.Context, telegramID int64, username string) (string, error) {
 	var id string
 	err := s.DB.QueryRowContext(ctx, `
@@ -248,7 +414,7 @@ func (s *Service) ensureUser(ctx context.Context, telegramID int64, username str
 
 func (s *Service) loadLessons(ctx context.Context, telegramID int64, date string) ([]Lesson, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT period, group_name, subject, room, conducted
+		SELECT period, group_name, subject, room, conducted, added
 		FROM schedule_lessons
 		WHERE user_id = (SELECT id FROM users WHERE telegram_id = $1)
 		  AND date = $2
@@ -262,7 +428,7 @@ func (s *Service) loadLessons(ctx context.Context, telegramID int64, date string
 	lessons := []Lesson{}
 	for rows.Next() {
 		var lesson Lesson
-		if err := rows.Scan(&lesson.Period, &lesson.Group, &lesson.Subject, &lesson.Room, &lesson.Conducted); err != nil {
+		if err := rows.Scan(&lesson.Period, &lesson.Group, &lesson.Subject, &lesson.Room, &lesson.Conducted, &lesson.Added); err != nil {
 			return nil, err
 		}
 		lessons = append(lessons, lesson)
@@ -292,6 +458,8 @@ func (s *Service) mergeLessons(ctx context.Context, telegramID int64, username, 
 				group_name = EXCLUDED.group_name,
 				subject = EXCLUDED.subject,
 				room = EXCLUDED.room,
+				-- Если PDF нашёл этот период, расписание важнее ручного урока.
+				added = FALSE,
 				conducted = CASE
 					WHEN schedule_lessons.manual THEN schedule_lessons.conducted
 					ELSE (schedule_lessons.conducted OR EXCLUDED.conducted)
@@ -318,6 +486,7 @@ func (s *Service) mergeLessons(ctx context.Context, telegramID int64, username, 
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM schedule_lessons
 		WHERE user_id = $1 AND date = $2 AND conducted = FALSE AND manual = FALSE
+		  AND added = FALSE
 		  AND NOT (period = ANY($3))
 	`, userID, date, pq.Array(periods)); err != nil {
 		return nil, fmt.Errorf("prune lessons: %w", err)

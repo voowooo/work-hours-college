@@ -1,6 +1,9 @@
 package schedule
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Минск круглый год UTC+3, без перехода на летнее время.
 var minsk = time.FixedZone("Europe/Minsk", 3*60*60)
@@ -38,13 +41,15 @@ var saturdayBells = []bell{
 	{14*60 + 25, 15*60 + 10},
 }
 
-func minskClock(now time.Time) (string, int) {
+// MinskClock возвращает сегодняшнюю дату (YYYY-MM-DD) и минуты от полуночи
+// по Минску.
+func MinskClock(now time.Time) (string, int) {
 	local := now.In(minsk)
 	return local.Format("2006-01-02"), local.Hour()*60 + local.Minute()
 }
 
 func lessonEnded(date string, period int, now time.Time) bool {
-	today, minutes := minskClock(now)
+	today, minutes := MinskClock(now)
 	if date < today {
 		return true
 	}
@@ -58,20 +63,35 @@ func lessonEnded(date string, period int, now time.Time) bool {
 	return minutes >= end
 }
 
-func lessonEndMinutes(date string, period int) (int, bool) {
+// BellTimes возвращает начало и конец пары в минутах от полуночи (Минск).
+func BellTimes(date string, period int) (start int, end int, ok bool) {
 	parsed, err := time.ParseInLocation("2006-01-02", date, minsk)
 	if err != nil || period < 1 {
-		return 0, false
+		return 0, 0, false
 	}
 	table := weekdayBells
 	switch parsed.Weekday() {
 	case time.Saturday:
 		table = saturdayBells
 	case time.Sunday:
-		return 0, false
+		return 0, 0, false
 	}
 	if period > len(table) {
-		return 0, false
+		return 0, 0, false
 	}
-	return table[period-1].end, true
+	bell := table[period-1]
+	return bell.start, bell.end, true
+}
+
+// FormatMinutes превращает 8*60+45 в "08:45".
+func FormatMinutes(minutes int) string {
+	if minutes < 0 || minutes >= 24*60 {
+		return ""
+	}
+	return fmt.Sprintf("%02d:%02d", minutes/60, minutes%60)
+}
+
+func lessonEndMinutes(date string, period int) (int, bool) {
+	_, end, ok := BellTimes(date, period)
+	return end, ok
 }

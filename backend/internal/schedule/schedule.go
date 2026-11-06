@@ -24,6 +24,9 @@ type Lesson struct {
 	Subject   string `json:"subject"`
 	Room      string `json:"room"`
 	Conducted bool   `json:"conducted"`
+	// Added — урок добавлен вручную, а не взят из PDF: его нельзя удалять
+	// при следующей загрузке расписания.
+	Added bool `json:"added,omitempty"`
 }
 
 type DaySchedule struct {
